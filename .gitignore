@@ -1,0 +1,7 @@
+token.json
+credentials.json
+venv
+__pycache__
+fantasy_scraper.log
+.DS_Store
+config_file.py

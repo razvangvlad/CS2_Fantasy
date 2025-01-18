@@ -1,0 +1,6 @@
+python -m pip install pandas
+python -m pip install --upgrade google-api-python-client google-auth-httplib2 google-auth-oauthlib
+python -m pip install beautifulsoup4
+python -m pip install selenium
+# brew install chromedriver  # macOS users only
+# sudo apt install chromium chromium-driver # raspberry pi users

@@ -181,12 +181,18 @@ def main():
                             
         except Exception as e:
             spiderman_dies = True
+            exception_message = str(e)
+
+            exc_type, exc_value, exc_traceback = exc_info()
+            traceback_info = format_exception(exc_type, exc_value, exc_traceback)
+            
+            full_exception_info = f"{exception_message}\n{''.join(traceback_info)}"
+
             try:
                 push_results([], spiderman_dies, logger)
-            except Exception as e:
+            except Exception as f:
                 logger.critical('We are living a really sad reality if the error handling fails...')
-            finally:  
-                exception_message = str(e)
+                exception_message = str(f)
 
                 exc_type, exc_value, exc_traceback = exc_info()
                 traceback_info = format_exception(exc_type, exc_value, exc_traceback)

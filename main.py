@@ -11,13 +11,15 @@ from logging import basicConfig, getLogger, INFO, ERROR, StreamHandler, Formatte
 from sys import exc_info, stdout
 from traceback import format_exception
 import config_file
+from sys import argv
+from zoneinfo import ZoneInfo
 
 
 SPREADSHEET_ID = config_file.spreadsheet_id
-REFRESH_INTERVAL = 900
+REFRESH_INTERVAL = 1800
 AWAKENING_INTERVAL = 60
 
-def parse_key_numbers(key_number_rows, fantasy_team_name):
+def parse_key_numbers(key_number_rows, fantasy_team_name, run_mode):
     data_dict = {
             "total_points": "0",
             "league_placement": "-",
@@ -59,9 +61,12 @@ def parse_key_numbers(key_number_rows, fantasy_team_name):
             except:
                 pass
 
-    return [fantasy_team_name] + list(data_dict.values())
+    if run_mode == 'leaderboard':
+        return [fantasy_team_name] + list(data_dict.values())
+    elif run_mode == 'tournament':
+        return [data_dict["total_points"]]
 
-def fetch_fantasy_data(url_list, logger):
+def fetch_fantasy_data(url_list, run_mode, logger):
     # # Enable headless mode (optional)
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")  # Use new headless mode for better rendering
@@ -78,14 +83,18 @@ def fetch_fantasy_data(url_list, logger):
     service = Service(config_file.chrome_driver_path)
     driver = webdriver.Chrome(service=service, options=chrome_options)
     
-    result = []
+    result_tournament = []
+    result_leaderboard = []
     is_first = 1
     spiderman_dies = False
-    for url in url_list:
 
-        driver.get(url)
+    for url in url_list:
+        if url == '' and run_mode == 'tournament':
+            result_tournament.append(['0'])
+            continue
 
         try:
+            driver.get(url)
             wait = WebDriverWait(driver, 20)
             
             if is_first == 1:
@@ -100,7 +109,8 @@ def fetch_fantasy_data(url_list, logger):
                     (By.XPATH, "//div[@class='fantasy-team-teamname-container']//div[@class='text-ellipsis']")
                 )).text
             
-            result.append(parse_key_numbers(key_number_rows, fantasy_team_name))
+            result_leaderboard.append(parse_key_numbers(key_number_rows, fantasy_team_name, 'leaderboard'))
+            result_tournament.append(parse_key_numbers(key_number_rows, fantasy_team_name, 'tournament'))
             logger.info(f'Successfully fetched data for {url}')
 
         except Exception as e:
@@ -113,20 +123,26 @@ def fetch_fantasy_data(url_list, logger):
             
             full_exception_info = f"{exception_message}\n{''.join(traceback_info)}"
             logger.critical(full_exception_info)
+            print(full_exception_info)
 
         finally:
             is_first = 0
 
-    result = sorted(result, key=lambda x: int(x[1]), reverse=True)
-
+    # Close browser
+    try:
+        driver.quit()
+    except:
+        pass
     # Optional: Take screenshot for debugging
     # driver.save_screenshot("debug_screenshot.png")
     # print("Screenshot saved as debug_screenshot.png")
+    
+    result_leaderboard = sorted(result_leaderboard, key=lambda x: int(x[1]), reverse=True)
+    if run_mode == 'leaderboard':
+        return result_leaderboard, spiderman_dies
 
-    # Close browser
-    driver.quit()
-
-    return sorted(result, key=lambda x: int(x[1]), reverse=True), spiderman_dies
+    elif run_mode == 'tournament':
+        return result_tournament, result_leaderboard, spiderman_dies
 
 def read_config(logger):
     config_data = tools.readDataFromSpreadsheet(spreadsheetId=SPREADSHEET_ID, range_name='Config!A2:A')
@@ -148,8 +164,33 @@ def read_config(logger):
     
     return timely_refresh, set(url_list)
 
+def read_tournament_config(logger):
+    config_data = tools.readDataFromSpreadsheet(spreadsheetId=SPREADSHEET_ID, range_name='Config!C3:J')
+    logger.info('Successfully read tournament_config_data.')
+
+    url_list = []
+    players_count = int(config_data[0][0])
+
+    if len(config_data) != players_count+3:
+        raise RuntimeError('I bet there is an x missing.')
+
+    for i in range(1,len(config_data[1])):
+        if config_data[-1][i].lower() == 'x':
+            index = i
+            break
+
+    for i in range(players_count):
+        try:
+            url_list.append(config_data[i+2][index])
+        except:
+            url_list.append('')
+
+    output_range = f"Tournament!{config_data[0][index]}4:{config_data[0][index]}"
+    
+    return url_list, output_range
+
 def push_results(results, spiderman_dies, logger):
-    now = datetime.now()
+    now = datetime.now(ZoneInfo("Europe/Berlin"))
     formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
     push_data = []
     push_data.append({'range':'Leaderboard!L2','values':[[formatted_time]]})
@@ -166,14 +207,43 @@ def push_results(results, spiderman_dies, logger):
     tools.writeMultipleRangesToSpreadsheet(spreadsheetId=SPREADSHEET_ID,data=push_data)
     logger.info('Refreshed the spreadsheet.')
 
+def push_tournament_results(results_tournament, output_range, results_leaderboard, spiderman_dies, logger):
+    now = datetime.now(ZoneInfo("Europe/Berlin"))
+    formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
+    push_data = []
+    push_data.append({'range':'Tournament!A1','values':[[formatted_time]]})
+
+    if spiderman_dies:
+        push_data.append({'range':'Tournament!A2','values':[[" "]]})
+
+    else:
+        if results_tournament:
+            push_data.append({'range':output_range,'values':results_tournament})
+        if results_leaderboard:
+            push_data.append({'range':'Leaderboard!A2','values':results_leaderboard})
+        tools.clearDataSpreadsheetRange(spreadsheetId=SPREADSHEET_ID,range_name='Leaderboard!A2:J')
+        logger.info('Cleared Leaderboard!A2:J')
+        push_data.append({'range':'Leaderboard!L2','values':[[formatted_time]]})
+
+    tools.writeMultipleRangesToSpreadsheet(spreadsheetId=SPREADSHEET_ID,data=push_data)
+    logger.info('Refreshed the spreadsheet.')
+
 def main():
+    if len(argv) != 2:
+        raise ValueError("Exactly one argument is required: 'tournament' or 'leaderboard'.")
+
+    arg = argv[1].lower()
+
+    if arg not in {"tournament", "leaderboard"}:
+        raise ValueError(f"Invalid argument: '{arg}'. Expected 'tournament' or 'leaderboard'.")
+
     basicConfig(
-        filename="fantasy_scraper.log",
+        filename=f"fantasy_scraper_{arg}.log",
         level=INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"
     )
-    logger = getLogger('fantasy_scraper')
+    logger = getLogger(f"fantasy_scraper_{arg}")
     getLogger("googleapiclient.discovery_cache").setLevel(ERROR)
 
     console_handler = StreamHandler(stdout)
@@ -196,8 +266,13 @@ def main():
                 if am_i_impatient == 1:
                     tools.clearDataSpreadsheetRange(spreadsheetId=SPREADSHEET_ID, range_name='Config!A2')
 
-                if url_list:
-                    results, spiderman_dies = fetch_fantasy_data(url_list, logger)
+                if arg == 'tournament':
+                    url_list, output_range = read_tournament_config(logger)
+                    results_tournament, results_leaderboard, spiderman_dies = fetch_fantasy_data(url_list, arg, logger)
+                    push_tournament_results(results_tournament, output_range, results_leaderboard, spiderman_dies, logger)
+
+                elif arg == 'leaderboard' and url_list:
+                    results, spiderman_dies = fetch_fantasy_data(url_list, arg, logger)         
                     push_results(results, spiderman_dies, logger)
 
                 spiderman_dies = False
@@ -217,7 +292,11 @@ def main():
             full_exception_info = f"{exception_message}\n{''.join(traceback_info)}"
 
             try:
-                push_results([], spiderman_dies, logger)
+                if arg == 'leaderboard':
+                    push_results([], spiderman_dies, logger)
+                elif arg == 'tournament':
+                    push_tournament_results([], '', spiderman_dies, logger)
+
             except Exception as f:
                 logger.critical('We are living a really sad reality if the error handling fails...')
                 exception_message = str(f)
@@ -227,6 +306,9 @@ def main():
                 
                 full_exception_info = f"{exception_message}\n{''.join(traceback_info)}"
                 logger.critical(full_exception_info)
+            else:
+                spiderman_dies = False
+
         finally:
             sleep(AWAKENING_INTERVAL)
 

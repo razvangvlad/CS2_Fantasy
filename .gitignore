@@ -2,6 +2,7 @@ token.json
 credentials.json
 venv
 __pycache__
-fantasy_scraper.log
+fantasy_scraper_leaderboard.log
+fantasy_scraper_tournament.log
 .DS_Store
 config_file.py
